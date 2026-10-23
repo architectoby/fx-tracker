@@ -4,23 +4,32 @@ import pandas as pd
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# 页面基础配置：默认适配移动端宽屏排版
 st.set_page_config(page_title="AUD/USD 助手", page_icon="💱", layout="centered")
 
-st.title("💱 AUD/USD 汇率与记账")
+st.title("💱 汇率监控与记账")
 
 # 1. 抓取与分析汇率数据
 @st.cache_data(ttl=300)
 def load_fx_data():
     ticker = yf.Ticker("AUDUSD=X")
     df = ticker.history(period="1y", interval="1d")
+    return df[['Close']].copy()
+
+try:
+    raw_df = load_fx_data()
+    
+    # 新增：全局视角切换开关 (控制所有计算和图表的基准)
+    is_usd_base = st.toggle("🔄 切换为 USD/AUD 视角 (1美元 = ?澳币)")
+    
+    df = raw_df.copy()
+    if is_usd_base:
+        # 将 0.65 转换为 1.53 视角
+        df['Close'] = 1 / df['Close']
+        
     df['SMA20'] = df['Close'].rolling(20).mean()
     df['Upper'] = df['SMA20'] + (df['Close'].rolling(20).std() * 2)
     df['Lower'] = df['SMA20'] - (df['Close'].rolling(20).std() * 2)
-    return df
-
-try:
-    df = load_fx_data()
+    
     curr_rate = float(df['Close'].iloc[-1])
     lower_band = float(df['Lower'].iloc[-1])
     upper_band = float(df['Upper'].iloc[-1])
@@ -32,14 +41,17 @@ try:
     col2.metric("20日均线", f"{sma_20:.4f}")
 
     # 交易决策信号提示
-    if curr_rate <= lower_band:
-        st.success("🟢 **买入 AUD 信号**：当前处于布林带下轨超卖区，适合用 USD 换回 AUD。")
-    elif curr_rate >= upper_band:
-        st.warning("🔴 **卖出 AUD 信号**：当前处于布林带上轨超买区，适合将 AUD 换为 USD。")
+    if not is_usd_base:
+        if curr_rate <= lower_band:
+            st.success("🟢 **买入 AUD 信号**：当前处于布林带下轨超卖区，适合用 USD 换回 AUD。")
+        elif curr_rate >= upper_band:
+            st.warning("🔴 **卖出 AUD 信号**：当前处于布林带上轨超买区，适合将 AUD 换为 USD。")
     else:
-        st.info("⚪ **观望区间**：当前汇率在正常均值范围内波动。")
+        if curr_rate >= upper_band:
+            st.success("🟢 **买入 AUD 信号**：USD达到高点，适合用 USD 换回 AUD。")
+        elif curr_rate <= lower_band:
+            st.warning("🔴 **卖出 AUD 信号**：USD跌至低点，适合将 AUD 换为 USD。")
 
-    # 移动端折线图展示
     st.line_chart(df[['Close', 'Upper', 'Lower']].tail(60))
 
 except Exception as e:
@@ -51,22 +63,29 @@ st.divider()
 # 2. 记账表单
 st.subheader("📝 记录本次换汇")
 
-# 连接 Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 with st.form("trade_entry_form"):
-    trade_type = st.selectbox("仓位类型", ["核心长期", "波段套利"])
-    action = st.selectbox("交易方向", ["AUD 兑换 USD (卖澳币)", "USD 兑换 AUD (买澳币)"])
-    rate_input = st.number_input("实际成交汇率", value=curr_rate, format="%.4f")
+    # 新增：改为横排的按钮样式
+    trade_type = st.radio("仓位类型", ["核心长期", "波段套利"], horizontal=True)
+    
+    # 新增：点击直观切换交易方向
+    action = st.radio("交易方向 (点击切换)", 
+                      ["🇦🇺 卖出 AUD (换回USD)", "🇺🇸 卖出 USD (换回AUD)"], 
+                      horizontal=True)
+    
+    rate_input = st.number_input("实际成交汇率 (按你看到的填)", value=curr_rate, format="%.4f")
     amount_in = st.number_input("支出金额", min_value=0.0, step=100.0)
 
-    # 自动计算预估换回金额
-    if "AUD 兑换 USD" in action:
-        calc_out = amount_in * rate_input
-        out_label = f"换得 USD: ${calc_out:.2f}"
+    # 自动计算逻辑（兼容两个视角的数学转换）
+    if "卖出 AUD" in action:
+        calc_out = amount_in * rate_input if not is_usd_base else (amount_in / rate_input if rate_input > 0 else 0)
+        out_label = f"预计换得: ${calc_out:.2f} USD"
+        db_action = "AUD -> USD"
     else:
-        calc_out = amount_in / rate_input if rate_input > 0 else 0.0
-        out_label = f"换得 AUD: ${calc_out:.2f}"
+        calc_out = (amount_in / rate_input if rate_input > 0 else 0) if not is_usd_base else amount_in * rate_input
+        out_label = f"预计换得: ${calc_out:.2f} AUD"
+        db_action = "USD -> AUD"
     
     st.caption(out_label)
     note = st.text_input("备注信息", placeholder="例：挂单成交、第1笔网格等")
@@ -78,12 +97,11 @@ with st.form("trade_entry_form"):
             st.warning("请输入有效金额！")
         else:
             try:
-                # 读取现有表格并追加新记录
                 existing_data = conn.read(ttl=0)
                 new_row = pd.DataFrame([{
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "Type": trade_type,
-                    "Action": action,
+                    "Action": db_action,
                     "Rate": rate_input,
                     "Amount_In": amount_in,
                     "Amount_Out": round(calc_out, 2),
