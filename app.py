@@ -20,7 +20,15 @@ try:
     raw_df = load_fx_data()
     
     # 新增：全局视角切换开关 (控制所有计算和图表的基准)
-    is_usd_base = st.toggle("🔄 切换为 USD/AUD 视角 (1美元 = ?澳币)")
+   # 初始化会话状态
+    if "is_usd_base" not in st.session_state:
+        st.session_state.is_usd_base = False
+
+    # 根据当前状态设定动态标签
+    toggle_label = "🔄 当前视角: USD/AUD (1美元 = ?澳币)" if st.session_state.is_usd_base else "🔄 当前视角: AUD/USD (1澳币 = ?美元)"
+    
+    # 渲染开关并绑定状态
+    is_usd_base = st.toggle(toggle_label, key="is_usd_base")
     
     df = raw_df.copy()
     if is_usd_base:
