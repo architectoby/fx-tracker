@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
+import altair as alt
 
 st.set_page_config(page_title="AUD/USD 助手", page_icon="💱", layout="centered")
 
@@ -52,7 +53,24 @@ try:
         elif curr_rate <= lower_band:
             st.warning("🔴 **卖出 AUD 信号**：USD跌至低点，适合将 AUD 换为 USD。")
 
-    st.line_chart(df[['Close', 'Upper', 'Lower']].tail(60))
+   # 准备图表数据并解除时区限制（Altair 需要）
+    chart_data = df[['Close', 'Upper', 'Lower']].tail(60).copy()
+    chart_data.index = chart_data.index.tz_localize(None) 
+    chart_data = chart_data.reset_index()
+    time_col = chart_data.columns[0]
+    chart_data = chart_data.melt(time_col, var_name='指标', value_name='汇率')
+    
+    # 根据当前视角设定 Y 轴区间
+    y_min, y_max = (1.2500, 1.6500) if is_usd_base else (0.5500, 0.8500)
+    
+    # 渲染自定义区间图表
+    chart = alt.Chart(chart_data).mark_line().encode(
+        x=alt.X(f'{time_col}:T', title=''),
+        y=alt.Y('汇率:Q', scale=alt.Scale(domain=[y_min, y_max])),
+        color=alt.Color('指标:N', legend=alt.Legend(title="图例"))
+    ).interactive()
+    
+    st.altair_chart(chart, use_container_width=True)
 
 except Exception as e:
     st.error(f"行情数据加载失败: {e}")
